@@ -1,0 +1,213 @@
+
+
+<?php
+session_start();
+
+/* 1. DATABASE CONNECTION */
+$host = "localhost";
+$user = "root";
+$pass = "";
+$db   = "database managment system";
+
+try {
+    $pdo = new PDO("mysql:host=$host", $user, $pass);
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    
+    $pdo->exec("CREATE DATABASE IF NOT EXISTS $db");
+    $pdo->exec("USE $db");
+
+    // Students Table
+    $pdo->exec("CREATE TABLE IF NOT EXISTS students (
+        student_id VARCHAR(10) PRIMARY KEY,
+        password VARCHAR(255) NOT NULL
+    )");
+
+    // Initial Books Table creation
+    $pdo->exec("CREATE TABLE IF NOT EXISTS books (
+        id INT PRIMARY KEY,
+        title VARCHAR(255),
+        issued TINYINT(1) DEFAULT 0,
+        borrower_id VARCHAR(10) DEFAULT NULL
+    )");
+
+    // ERROR HANDLING FOR MISSING AUTHOR COLUMN:
+    // This checks if the 'author' column exists; if not, it adds it.
+    $checkColumn = $pdo->query("SHOW COLUMNS FROM books LIKE 'author'");
+    if (!$checkColumn->fetch()) {
+        $pdo->exec("ALTER TABLE books ADD COLUMN author VARCHAR(255) AFTER title");
+    }
+
+} catch (PDOException $e) {
+    die("Database Error: " . $e->getMessage());
+}
+
+$message = "";
+
+/* 2. REGISTRATION */
+if (isset($_POST['register'])) {
+    $sid = trim($_POST['reg_id']);
+    $pwd = password_hash($_POST['reg_pass'], PASSWORD_DEFAULT);
+
+    if (preg_match('/^\d{5,10}$/', $sid)) {
+        try {
+            $stmt = $pdo->prepare("INSERT INTO students (student_id, password) VALUES (?, ?)");
+            $stmt->execute([$sid, $pwd]);
+            $message = "Registration successful!";
+        } catch (Exception $e) {
+            $message = "Error: ID already exists.";
+        }
+    } else {
+        $message = "ID must be 5-7 digits.";
+    }
+}
+
+/* 3. LOGIN */
+if (isset($_POST['login'])) {
+    $sid = $_POST['student_id'];
+    $pwd = $_POST['password'];
+    $stmt = $pdo->prepare("SELECT * FROM students WHERE student_id = ?");
+    $stmt->execute([$sid]);
+    $user = $stmt->fetch();
+
+    if ($user && password_verify($pwd, $user['password'])) {
+        $_SESSION['student_id'] = $sid;
+    } else {
+        $message = "Invalid login credentials!";
+    }
+}
+
+/* 4. LOGOUT */
+if (isset($_POST['logout'])) {
+    session_destroy();
+    header("Location: " . $_SERVER['PHP_SELF']);
+    exit;
+}
+
+/* 5. ADD BOOK (With Logic Error Handling) */
+if (isset($_POST['add_book']) && isset($_SESSION['student_id'])) {
+    $bid = trim($_POST['book_id']);
+    $btitle = trim($_POST['book_title']);
+    $bauthor = trim($_POST['book_author']);
+    
+    // Validate inputs
+    if (empty($bid)  empty($btitle)  empty($bauthor)) {
+        $message = "Error: All fields (ID, Title, Author) are required.";
+    } elseif (strlen($bauthor) < 3) {
+        $message = "Error: Author name is too short.";
+    } else {
+        try {
+            $stmt = $pdo->prepare("INSERT INTO books (id, title, author) VALUES (?, ?, ?)");
+            $stmt->execute([$bid, $btitle, $bauthor]);
+            $message = "Book added successfully!";
+        } catch (Exception $e) {
+            $message = "Error: Book ID $bid already exists.";
+        }
+    }
+}
+
+/* 6. ISSUE & RETURN */
+if (isset($_POST['issue_book'])) {
+    $bid = $_POST['issue_book_id'];
+    $stmt = $pdo->prepare("UPDATE books SET issued=1, borrower_id=? WHERE id=? AND issued=0");
+    $stmt->execute([$_SESSION['student_id'], $bid]);
+    $message = $stmt->rowCount() ? "Book Borrowed!" : "Error: Book unavailable or ID incorrect.";
+}
+
+if (isset($_POST['return_book'])) {
+    $bid = $_POST['return_book_id'];
+    $stmt = $pdo->prepare("UPDATE books SET issued=0, borrower_id=NULL WHERE id=? AND borrower_id=?");
+    $stmt->execute([$bid, $_SESSION['student_id']]);
+    $message = $stmt->rowCount() ? "Book Returned!" : "Error: You are not the borrower of this book.";
+}
+
+$books = $pdo->query("SELECT * FROM books ORDER BY id DESC")->fetchAll(PDO::FETCH_ASSOC);
+?>
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Secure Library - Author Managed</title>
+    <style>
+        body { font-family: 'Segoe UI', Arial; background: #d7d8d7; padding: 20px; }
+        .container { max-width: 950px; margin: auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        .msg { padding: 10px; margin-bottom: 20px; border-radius: 5px; background: #36443d; color: rgb(133, 100, 4); font-weight: bold; border: 1px solid #baffd1; }
+        input { padding: 10px; margin: 5px 0; border: 1px solid #ddd; border-radius: 5px; }
+        button { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; color: white; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { border: 1px solid hsl(0, 2%, 62%); padding: 12px; text-align: left; }
+        th { background: #e4eaf0; color: white; }
+        tr:nth-child(even) { background: rgb(236, 225, 225); }
+        .admin-panel { background: #19436e; padding: 20px; border-radius: 8px; border-left: 5px solid rgb(98, 89, 182); margin: 20px 0; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <?php if ($message): ?> <div class="msg"><?= $message ?></div> <?php endif; ?>
+
+    <?php if (!isset($_SESSION['student_id'])): ?>
+        <h2>Login / Register</h2>
+        <form method="POST">
+            <input type="text" name="student_id" placeholder="Student ID" required>
+            <input type="password" name="password" placeholder="Password" required>
+            <button name="login" style="background:#007bff">Login</button>
+        </form>
+        <hr>
+        <form method="POST">
+            <input type="text" name="reg_id" placeholder="New ID (5-10 digits)" required>
+            <input type="password" name="reg_pass" placeholder="New Password" required>
+            <button name="register" style="background:#6c757d">Register</button>
+        </form>
+
+    <?php else: ?>
+        <div style="display:flex; justify-content: space-between; align-items: center;">
+            <h2>Welcome, <?= htmlspecialchars($_SESSION['student_id']) ?></h2>
+            <form method="POST"><button name="logout" style="background:#dc3545">Logout</button></form>
+        </div>
+
+        <div class="admin-panel">
+            <h3>Add New Book</h3>
+            <form method="POST">
+                <input type="number" name="book_id" placeholder="Book ID" required>
+                <input type="text" name="book_title" placeholder="Title" required>
+                <input type="text" name="book_author" placeholder="Author" required>
+                <button name="add_book" style="background:#9b59b6">Save Book</button>
+            </form>
+        </div>
+
+        <div style="margin-bottom: 20px;">
+            <form method="POST" style="display:inline;">
+                <input type="number" name="issue_book_id" placeholder="ID to Borrow" required>
+                <button name="issue_book" style="background:#28a745">Borrow</button>
+            </form>
+            <form method="POST" style="display:inline; margin-left: 10px;">
+                <input type="number" name="return_book_id" placeholder="ID to Return" required>
+                <button name="return_book" style="background:#ffc107; color:black">Return</button>
+            </form>
+        </div>
+
+        <table>
+            <tr>
+                <th>ID</th>
+                <th>Title</th>
+                <th>Author</th>
+                <th>Status</th>
+            </tr>
+            <?php foreach($books as $b): ?>
+            <tr>
+                <td><?= $b['id'] ?></td>
+                <td><?= htmlspecialchars($b['title']) ?></td>
+                <td><?= htmlspecialchars($b['author'] ?? 'Unknown') ?></td>
+                <td>
+                    <?= $b['issued'] ? 
+                        "<span style='color:red'>Borrowed by ".$b['borrower_id']."</span>" : 
+                        "<span style='color:green'>Available</span>" ?>
+                </td>
+            </tr>
+            <?php endforeach; ?>
+        </table>
+    <?php endif; ?>
+</div>
+
+</body>
+</html>
